@@ -50,6 +50,11 @@ class ProductViewSet(viewsets.ModelViewSet):
 
     @action(detail=True, methods=['post'], url_path='deactivate')
     def deactivate(self, request, pk=None):
+        if request.user.role != 'owner':
+            return Response(
+                {'error': 'Only business owners can deactivate products.'},
+                status=status.HTTP_403_FORBIDDEN,
+            )
         product = self.get_object()
         product.is_active = False
         product.save(update_fields=['is_active', 'updated_at'])

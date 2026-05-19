@@ -1,9 +1,11 @@
+from decimal import Decimal
 from rest_framework import viewsets, permissions, status
-from rest_framework.decorators import action
+from rest_framework.decorators import action, api_view, permission_classes
 from rest_framework.response import Response
 from django.shortcuts import get_object_or_404
+from django.db.models import Sum
 
-from .models import Business, SyncStatus
+from .models import Business, StaffMember, SyncStatus
 from .serializers import (
     BusinessSerializer,
     BusinessListSerializer,
@@ -150,5 +152,53 @@ class BusinessViewSet(viewsets.ModelViewSet):
             "last_synced": business.updated_at,
             "server_id": business.server_id
         })
+
+
+@api_view(['GET'])
+@permission_classes([permissions.IsAuthenticated])
+def staff_dashboard(request):
+    """
+    GET /api/staff/me/dashboard/
+    Returns performance metrics for the authenticated staff member.
+    403 if the requesting user is not a staff role.
+    """
+    if request.user.role != 'staff':
+        return Response(
+            {'error': 'This endpoint is only available to staff users.'},
+            status=status.HTTP_403_FORBIDDEN,
+        )
+
+    staff = StaffMember.objects.filter(
+        user=request.user, status='active'
+    ).select_related('business').first()
+
+    if not staff:
+        return Response(
+            {'error': 'No active staff account found.'},
+            status=status.HTTP_404_NOT_FOUND,
+        )
+
+    from documents.models import Document
+
+    docs = Document.objects.filter(
+        business=staff.business,
+        created_by=request.user,
+    )
+
+    documents_created = docs.count()
+    revenue_generated = docs.filter(
+        status__in=[Document.Status.CONFIRMED, Document.Status.DELIVERED]
+    ).aggregate(total=Sum('grand_total'))['total'] or Decimal('0.00')
+
+    avg_transaction_value = (
+        revenue_generated / documents_created
+        if documents_created else Decimal('0.00')
+    )
+
+    return Response({
+        'documents_created': documents_created,
+        'revenue_generated': revenue_generated,
+        'avg_transaction_value': avg_transaction_value,
+    })
         
         

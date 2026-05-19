@@ -6,7 +6,6 @@ from .views import BusinessViewSet
 router = DefaultRouter()
 router.register(r'', BusinessViewSet, basename='business')
 
-
 urlpatterns = [
     path('', include(router.urls)),
 ]

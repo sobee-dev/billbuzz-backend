@@ -1,10 +1,11 @@
 from rest_framework import viewsets, status, permissions
 from rest_framework.decorators import action
+from rest_framework.exceptions import PermissionDenied
 from rest_framework.response import Response
 from rest_framework.pagination import CursorPagination
 from django.db import transaction
 
-from business.models import Business
+from business.models import Business, StaffMember
 from .models import Document
 from .serializers import DocumentSerializer, DocumentListSerializer
 
@@ -25,12 +26,30 @@ class DocumentViewSet(viewsets.ModelViewSet):
             return DocumentListSerializer
         return DocumentSerializer
 
-    def get_queryset(self):
+    def _get_base_queryset(self):
+        """Returns the unfiltered base queryset scoped to the requesting user's role."""
         user = self.request.user
-        queryset = Document.objects.filter(
+
+        if user.role == 'staff':
+            staff = StaffMember.objects.filter(
+                user=user, status='active'
+            ).select_related('business').first()
+            if not staff:
+                return Document.objects.none()
+            return Document.objects.filter(
+                business=staff.business,
+                created_by=user,
+                deleted_at__isnull=True,
+            ).select_related('business', 'customer', 'created_by')
+
+        # owner (and admin) — see all documents for their business
+        return Document.objects.filter(
             business__owner=user,
             deleted_at__isnull=True,
         ).select_related('business', 'customer', 'created_by')
+
+    def get_queryset(self):
+        queryset = self._get_base_queryset()
 
         # ── Filters ──────────────────────────────────────────────────────────
         doc_type = self.request.query_params.get('document_type')
@@ -53,10 +72,21 @@ class DocumentViewSet(viewsets.ModelViewSet):
 
     @transaction.atomic
     def perform_create(self, serializer):
-        business = Business.objects.get(owner=self.request.user)
+        user = self.request.user
+
+        if user.role == 'staff':
+            staff = StaffMember.objects.filter(
+                user=user, status='active'
+            ).select_related('business').first()
+            if not staff:
+                raise PermissionDenied('No active staff account found.')
+            business = staff.business
+        else:
+            business = Business.objects.get(owner=user)
+
         serializer.save(
             business=business,
-            created_by=self.request.user,
+            created_by=user,
             sync_status=Document.SyncStatus.SYNCED,
         )
 
