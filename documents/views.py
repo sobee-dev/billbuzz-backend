@@ -3,6 +3,7 @@ from rest_framework.decorators import action
 from rest_framework.exceptions import PermissionDenied
 from rest_framework.response import Response
 from rest_framework.pagination import CursorPagination
+from django.core.exceptions import ValidationError as DjangoValidationError
 from django.db import transaction
 
 from business.models import Business, StaffMember
@@ -98,13 +99,10 @@ class DocumentViewSet(viewsets.ModelViewSet):
     @action(detail=True, methods=['post'], url_path='confirm')
     def confirm(self, request, pk=None):
         doc = self.get_object()
-        if doc.status != Document.Status.DRAFT:
-            return Response(
-                {'error': 'Only draft documents can be confirmed.'},
-                status=status.HTTP_400_BAD_REQUEST,
-            )
-        doc.status = Document.Status.CONFIRMED
-        doc.save(update_fields=['status', 'updated_at'])
+        try:
+            doc.confirm()
+        except DjangoValidationError as exc:
+            return Response({'error': exc.message}, status=status.HTTP_400_BAD_REQUEST)
         return Response(DocumentSerializer(doc).data)
 
     @action(detail=True, methods=['post'], url_path='deliver')
@@ -121,13 +119,10 @@ class DocumentViewSet(viewsets.ModelViewSet):
     @action(detail=True, methods=['post'], url_path='cancel')
     def cancel(self, request, pk=None):
         doc = self.get_object()
-        if doc.status == Document.Status.CANCELLED:
-            return Response(
-                {'error': 'Document is already cancelled.'},
-                status=status.HTTP_400_BAD_REQUEST,
-            )
-        doc.status = Document.Status.CANCELLED
-        doc.save(update_fields=['status', 'updated_at'])
+        try:
+            doc.cancel()
+        except DjangoValidationError as exc:
+            return Response({'error': exc.message}, status=status.HTTP_400_BAD_REQUEST)
         return Response(DocumentSerializer(doc).data)
 
     @action(detail=True, methods=['post'], url_path='mark-paid')
