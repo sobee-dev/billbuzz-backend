@@ -1,4 +1,6 @@
 from django.test import TestCase
+from rest_framework.test import APIClient
+from rest_framework import status
 from datetime import date
 from accounts.models import User
 from business.models import Business
@@ -77,3 +79,29 @@ class DocumentModelTest(TestCase):
         self.assertEqual(
             Document.objects.filter(status=Document.Status.DRAFT).count(), 0
         )
+
+
+class DocumentCreatedByTest(TestCase):
+
+    def setUp(self):
+        self.owner = make_user('owner@test.com')
+        self.business = make_business(self.owner)
+        self.client = APIClient()
+        self.client.force_authenticate(user=self.owner)
+
+    def test_post_sets_created_by_to_authenticated_user(self):
+        payload = {
+            'documentType': 'receipt',
+            'documentNumber': 'REC-100',
+            'documentDate': str(date.today()),
+            'customerName': 'Jane Doe',
+            'subtotal': '50.00',
+            'taxRate': '0.1500',
+            'taxAmount': '7.50',
+            'discount': '0.00',
+            'grandTotal': '57.50',
+        }
+        response = self.client.post('/api/documents/', payload, format='json')
+        self.assertEqual(response.status_code, status.HTTP_201_CREATED)
+        # response.data is the raw dict (pre-render), so keys are snake_case
+        self.assertEqual(response.data['created_by'], self.owner.id)
