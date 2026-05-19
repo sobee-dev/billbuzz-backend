@@ -84,6 +84,7 @@ INSTALLED_APPS = [
     "accounts",
     "receipts",
     "business",
+    "products",
 ]
 
 # ── Middleware ────────────────────────────────────────────────────────────────
