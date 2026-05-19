@@ -78,3 +78,36 @@ class Business(models.Model):
 
     def __str__(self):
         return self.name
+
+
+class StaffMember(models.Model):
+    PERMISSION_CHOICES = [
+        ('full_access', 'Full Access'),
+        ('limited_access', 'Limited Access'),
+    ]
+
+    STATUS_CHOICES = [
+        ('active', 'Active'),
+        ('inactive', 'Inactive'),
+    ]
+
+    user = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.CASCADE,
+        related_name='staff_accounts'
+    )
+    business = models.ForeignKey(
+        Business,
+        on_delete=models.CASCADE,
+        related_name='staff_members'
+    )
+    department = models.CharField(max_length=100, blank=True)
+    permission_level = models.CharField(max_length=20, choices=PERMISSION_CHOICES, default='full_access')
+    status = models.CharField(max_length=20, choices=STATUS_CHOICES, default='active')
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        unique_together = [['user', 'business']]
+
+    def __str__(self):
+        return f"{self.user.email} @ {self.business.name}"
