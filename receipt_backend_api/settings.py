@@ -87,6 +87,7 @@ INSTALLED_APPS = [
     "products",
     "customers",
     "documents",
+    "inventory",
 ]
 
 # ── Middleware ────────────────────────────────────────────────────────────────
