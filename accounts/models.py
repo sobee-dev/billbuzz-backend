@@ -23,9 +23,16 @@ class UserManager(BaseUserManager):
         return self._create_user(email, password, **extra_fields)
 
 class User(AbstractUser):
+    ROLE_CHOICES = [
+        ('owner', 'Business Owner'),
+        ('staff', 'Staff'),
+        ('admin', 'Admin'),
+    ]
+
     id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
     username = None # Removed for email-only login
     email = models.EmailField(unique=True)
+    role = models.CharField(max_length=20, choices=ROLE_CHOICES, default='owner')
     
     # Converted to snake_case
     email_verified_at = models.DateTimeField(null=True, blank=True)
