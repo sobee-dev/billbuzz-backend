@@ -24,7 +24,7 @@ def make_business(owner):
     )
 
 
-def make_document(business, user, doc_type='receipt', number='001'):
+def make_document(business, user, doc_type='sales_invoice', number='001'):
     return Document.objects.create(
         business=business,
         created_by=user,
@@ -46,23 +46,23 @@ class DocumentModelTest(TestCase):
         self.owner = make_user('owner@test.com')
         self.business = make_business(self.owner)
 
-    def test_create_receipt_type_document(self):
-        doc = make_document(self.business, self.owner, doc_type='receipt', number='REC-001')
-        self.assertEqual(doc.document_type, Document.DocumentType.RECEIPT)
+    def test_create_sales_invoice_document(self):
+        doc = make_document(self.business, self.owner, doc_type='sales_invoice', number='SI-001')
+        self.assertEqual(doc.document_type, Document.DocumentType.SALES_INVOICE)
         self.assertEqual(doc.status, Document.Status.DRAFT)
         self.assertEqual(doc.payment_status, Document.PaymentStatus.UNPAID)
-        self.assertEqual(str(doc), 'Receipt #REC-001')
+        self.assertEqual(str(doc), 'Sales Invoice #SI-001')
 
     def test_filter_by_document_type(self):
-        make_document(self.business, self.owner, doc_type='receipt', number='R-001')
         make_document(self.business, self.owner, doc_type='sales_invoice', number='SI-001')
         make_document(self.business, self.owner, doc_type='purchase_invoice', number='PI-001')
+        make_document(self.business, self.owner, doc_type='proforma_invoice', number='PRO-001')
 
-        receipts = Document.objects.filter(document_type=Document.DocumentType.RECEIPT)
         sales = Document.objects.filter(document_type=Document.DocumentType.SALES_INVOICE)
+        purchases = Document.objects.filter(document_type=Document.DocumentType.PURCHASE_INVOICE)
 
-        self.assertEqual(receipts.count(), 1)
         self.assertEqual(sales.count(), 1)
+        self.assertEqual(purchases.count(), 1)
 
     def test_filter_by_status(self):
         doc = make_document(self.business, self.owner, number='D-001')
@@ -91,8 +91,8 @@ class DocumentCreatedByTest(TestCase):
 
     def test_post_sets_created_by_to_authenticated_user(self):
         payload = {
-            'documentType': 'receipt',
-            'documentNumber': 'REC-100',
+            'documentType': 'sales_invoice',
+            'documentNumber': 'SI-100',
             'documentDate': str(date.today()),
             'customerName': 'Jane Doe',
             'subtotal': '50.00',

@@ -1,8 +1,11 @@
 """
-Integration tests for the Document inventory state machine.
+Integration tests for manual inventory actions.
 
-Covers every inventory transition and the /confirm/ API endpoint.
-Uses Django TestCase for model tests and DRF APITestCase for HTTP tests.
+Covers:
+  - POST /api/documents/{id}/deduct-inventory/  (sales invoices)
+  - POST /api/documents/{id}/add-to-inventory/  (purchase invoices)
+  - Document lifecycle (confirm / cancel / deliver) with no automatic inventory side-effects
+  - Access control (unauthenticated, wrong document type)
 """
 from datetime import date
 from decimal import Decimal
@@ -75,10 +78,10 @@ def add_item(document, product, quantity):
     )
 
 
-# ─────────────── Model / state machine tests (TestCase) ───────────────────────
+# ─────────────── Model / lifecycle tests (TestCase) ───────────────────────────
 
-class SalesInvoiceConfirmReservesInventoryTest(TestCase):
-    """Scenario 1: confirming a sales invoice increases quantity_reserved."""
+class ConfirmDoesNotTouchInventoryTest(TestCase):
+    """confirm() only changes status — no inventory side-effects."""
 
     def setUp(self):
         self.owner = make_user('owner@test.com')
@@ -89,16 +92,37 @@ class SalesInvoiceConfirmReservesInventoryTest(TestCase):
         )
         add_item(self.doc, self.product, 10)
 
-    def test_confirm_increases_quantity_reserved(self):
+    def test_confirm_leaves_inventory_unchanged(self):
         self.doc.confirm()
         self.product.refresh_from_db()
-        self.assertEqual(self.product.quantity_reserved, Decimal('10.000'))
-        # on_hand is NOT changed at confirm for sales invoices
         self.assertEqual(self.product.quantity_on_hand, Decimal('50.000'))
+        self.assertEqual(self.product.quantity_reserved, Decimal('0.000'))
+        self.assertFalse(InventoryTransaction.objects.exists())
+
+    def test_confirm_changes_status_to_confirmed(self):
+        self.doc.confirm()
+        self.doc.refresh_from_db()
+        self.assertEqual(self.doc.status, Document.Status.CONFIRMED)
 
 
-class SalesInvoiceDeliverDeductsInventoryTest(TestCase):
-    """Scenario 2: delivering a confirmed sales invoice deducts on_hand and releases reservation."""
+class DoubleConfirmRaisesValidationErrorTest(TestCase):
+    """confirm() on an already-confirmed document must raise ValidationError."""
+
+    def setUp(self):
+        self.owner = make_user('owner@test.com')
+        self.business = make_business(self.owner)
+        self.doc = make_document(
+            self.business, Document.DocumentType.SALES_INVOICE, owner=self.owner
+        )
+        self.doc.confirm()
+
+    def test_double_confirm_raises(self):
+        with self.assertRaises(ValidationError):
+            self.doc.confirm()
+
+
+class DeliverDoesNotTouchInventoryTest(TestCase):
+    """mark_delivered() only updates status/delivery fields — no inventory side-effects."""
 
     def setUp(self):
         self.owner = make_user('owner@test.com')
@@ -109,56 +133,22 @@ class SalesInvoiceDeliverDeductsInventoryTest(TestCase):
         )
         add_item(self.doc, self.product, 10)
         self.doc.confirm()
-        self.product.refresh_from_db()
 
-    def test_deliver_deducts_on_hand_and_releases_reservation(self):
+    def test_deliver_leaves_inventory_unchanged(self):
         self.doc.mark_delivered()
         self.product.refresh_from_db()
-        self.assertEqual(self.product.quantity_on_hand, Decimal('40.000'))
-        self.assertEqual(self.product.quantity_reserved, Decimal('0.000'))
+        self.assertEqual(self.product.quantity_on_hand, Decimal('50.000'))
+        self.assertFalse(InventoryTransaction.objects.exists())
 
-
-class ReceiptConfirmDeductsImmediatelyTest(TestCase):
-    """Scenario 3: confirming a receipt deducts on_hand immediately (no reservation)."""
-
-    def setUp(self):
-        self.owner = make_user('owner@test.com')
-        self.business = make_business(self.owner)
-        self.product = make_product(self.business, qty_on_hand=Decimal('30.000'))
-        self.doc = make_document(
-            self.business, Document.DocumentType.RECEIPT, owner=self.owner
-        )
-        add_item(self.doc, self.product, 5)
-
-    def test_confirm_deducts_on_hand_immediately(self):
-        self.doc.confirm()
-        self.product.refresh_from_db()
-        self.assertEqual(self.product.quantity_on_hand, Decimal('25.000'))
-        # No reservation for receipts
-        self.assertEqual(self.product.quantity_reserved, Decimal('0.000'))
-
-
-class PurchaseInvoiceDeliverAddsStockTest(TestCase):
-    """Scenario 4: delivering a purchase invoice adds to on_hand."""
-
-    def setUp(self):
-        self.owner = make_user('owner@test.com')
-        self.business = make_business(self.owner)
-        self.product = make_product(self.business, qty_on_hand=Decimal('10.000'))
-        self.doc = make_document(
-            self.business, Document.DocumentType.PURCHASE_INVOICE, owner=self.owner
-        )
-        add_item(self.doc, self.product, 20)
-        self.doc.confirm()  # purchase confirm has no inventory effect
-
-    def test_deliver_adds_to_on_hand(self):
+    def test_deliver_marks_document_delivered(self):
         self.doc.mark_delivered()
-        self.product.refresh_from_db()
-        self.assertEqual(self.product.quantity_on_hand, Decimal('30.000'))
+        self.doc.refresh_from_db()
+        self.assertEqual(self.doc.status, Document.Status.DELIVERED)
+        self.assertTrue(self.doc.is_delivered)
 
 
-class CancelConfirmedSalesInvoiceReversesReservationTest(TestCase):
-    """Scenario 5: cancelling a confirmed sales invoice releases the reservation."""
+class CancelDoesNotTouchInventoryTest(TestCase):
+    """cancel() only changes status — no inventory side-effects."""
 
     def setUp(self):
         self.owner = make_user('owner@test.com')
@@ -169,125 +159,144 @@ class CancelConfirmedSalesInvoiceReversesReservationTest(TestCase):
         )
         add_item(self.doc, self.product, 15)
         self.doc.confirm()
-        self.product.refresh_from_db()
-        self.assertEqual(self.product.quantity_reserved, Decimal('15.000'))
 
-    def test_cancel_reverses_reservation(self):
+    def test_cancel_leaves_inventory_unchanged(self):
         self.doc.cancel()
         self.product.refresh_from_db()
-        self.assertEqual(self.product.quantity_reserved, Decimal('0.000'))
         self.assertEqual(self.product.quantity_on_hand, Decimal('50.000'))
+        self.assertFalse(InventoryTransaction.objects.exists())
+
+    def test_cancel_changes_status(self):
+        self.doc.cancel()
+        self.doc.refresh_from_db()
         self.assertEqual(self.doc.status, Document.Status.CANCELLED)
 
-
-class DoubleConfirmRaisesValidationErrorTest(TestCase):
-    """Scenario 6: confirming an already-confirmed document raises ValidationError."""
-
-    def setUp(self):
-        self.owner = make_user('owner@test.com')
-        self.business = make_business(self.owner)
-        self.doc = make_document(
-            self.business, Document.DocumentType.SALES_INVOICE, owner=self.owner
-        )
-        self.doc.confirm()
-
-    def test_double_confirm_raises_validation_error(self):
+    def test_double_cancel_raises(self):
+        self.doc.cancel()
         with self.assertRaises(ValidationError):
-            self.doc.confirm()
-
-
-class InsufficientStockRaisesValidationErrorTest(TestCase):
-    """Scenario 7: confirming a receipt when stock is insufficient raises ValidationError."""
-
-    def setUp(self):
-        self.owner = make_user('owner@test.com')
-        self.business = make_business(self.owner)
-        self.product = make_product(self.business, qty_on_hand=Decimal('3.000'))
-        self.doc = make_document(
-            self.business, Document.DocumentType.RECEIPT, owner=self.owner
-        )
-        add_item(self.doc, self.product, 10)  # 10 > 3 on_hand
-
-    def test_insufficient_stock_raises_validation_error(self):
-        with self.assertRaises(ValidationError):
-            self.doc.confirm()
-        # Document must remain draft — no partial state changes
-        self.doc.refresh_from_db()
-        self.assertEqual(self.doc.status, Document.Status.DRAFT)
-        # Product stock must be untouched
-        self.product.refresh_from_db()
-        self.assertEqual(self.product.quantity_on_hand, Decimal('3.000'))
-
-
-class InventoryTransactionRecordsTest(TestCase):
-    """Scenario 8: correct InventoryTransaction records are created for each transition."""
-
-    def setUp(self):
-        self.owner = make_user('owner@test.com')
-        self.business = make_business(self.owner)
-        self.product = make_product(self.business, qty_on_hand=Decimal('100.000'))
-
-    def _make_sales_doc(self, qty):
-        doc = make_document(
-            self.business, Document.DocumentType.SALES_INVOICE, owner=self.owner
-        )
-        add_item(doc, self.product, qty)
-        return doc
-
-    def test_sales_confirm_creates_sale_confirmed_transaction(self):
-        doc = self._make_sales_doc(10)
-        doc.confirm()
-        tx = InventoryTransaction.objects.get(reference_document_id=doc.id)
-        self.assertEqual(tx.transaction_type, InventoryTransaction.TransactionType.SALE_CONFIRMED)
-        self.assertEqual(tx.quantity_change, Decimal('10.000'))
-
-    def test_sales_deliver_creates_sale_delivered_transaction(self):
-        doc = self._make_sales_doc(10)
-        doc.confirm()
-        doc.mark_delivered()
-        txs = InventoryTransaction.objects.filter(
-            reference_document_id=doc.id,
-            transaction_type=InventoryTransaction.TransactionType.SALE_DELIVERED,
-        )
-        self.assertEqual(txs.count(), 1)
-        self.assertEqual(txs.first().quantity_change, Decimal('-10.000'))
-
-    def test_sales_cancel_creates_sale_cancelled_transaction(self):
-        doc = self._make_sales_doc(10)
-        doc.confirm()
-        doc.cancel()
-        tx = InventoryTransaction.objects.get(
-            reference_document_id=doc.id,
-            transaction_type=InventoryTransaction.TransactionType.SALE_CANCELLED,
-        )
-        self.assertEqual(tx.quantity_change, Decimal('-10.000'))
-
-    def test_receipt_confirm_creates_sale_delivered_transaction(self):
-        doc = make_document(self.business, Document.DocumentType.RECEIPT, owner=self.owner)
-        add_item(doc, self.product, 7)
-        doc.confirm()
-        tx = InventoryTransaction.objects.get(reference_document_id=doc.id)
-        self.assertEqual(tx.transaction_type, InventoryTransaction.TransactionType.SALE_DELIVERED)
-        self.assertEqual(tx.quantity_change, Decimal('-7.000'))
-
-    def test_purchase_deliver_creates_purchase_received_transaction(self):
-        doc = make_document(
-            self.business, Document.DocumentType.PURCHASE_INVOICE, owner=self.owner
-        )
-        add_item(doc, self.product, 25)
-        doc.confirm()
-        doc.mark_delivered()
-        tx = InventoryTransaction.objects.get(
-            reference_document_id=doc.id,
-            transaction_type=InventoryTransaction.TransactionType.PURCHASE_RECEIVED,
-        )
-        self.assertEqual(tx.quantity_change, Decimal('25.000'))
+            self.doc.cancel()
 
 
 # ─────────────────── API tests (APITestCase) ──────────────────────────────────
 
+class DeductInventoryEndpointTest(APITestCase):
+    """POST /api/documents/{id}/deduct-inventory/"""
+
+    def setUp(self):
+        self.owner = make_user('owner@test.com', role='owner')
+        self.business = make_business(self.owner)
+        self.product = make_product(self.business, qty_on_hand=Decimal('100.000'))
+        self.doc = make_document(
+            self.business, Document.DocumentType.SALES_INVOICE, owner=self.owner
+        )
+        self.item = add_item(self.doc, self.product, 20)
+        self.doc.confirm()
+        self.client.force_authenticate(user=self.owner)
+
+    def _url(self, doc_id=None):
+        return f'/api/documents/{doc_id or self.doc.id}/deduct-inventory/'
+
+    def test_subtract_all_deducts_full_quantity(self):
+        response = self.client.post(self._url(), {'subtract_all': True}, format='json')
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.product.refresh_from_db()
+        self.assertEqual(self.product.quantity_on_hand, Decimal('80.000'))
+
+    def test_subtract_all_creates_transaction_record(self):
+        self.client.post(self._url(), {'subtract_all': True}, format='json')
+        tx = InventoryTransaction.objects.get(reference_document_id=self.doc.id)
+        self.assertEqual(tx.transaction_type, InventoryTransaction.TransactionType.SALE_DELIVERED)
+        self.assertEqual(tx.quantity_change, Decimal('-20.000'))
+
+    def test_partial_deduction_by_item(self):
+        response = self.client.post(self._url(), {
+            'items': [{'item_id': str(self.item.id), 'quantity': 7}]
+        }, format='json')
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.product.refresh_from_db()
+        self.assertEqual(self.product.quantity_on_hand, Decimal('93.000'))
+
+    def test_insufficient_stock_returns_400(self):
+        # Set stock below what the item requires
+        self.product.quantity_on_hand = Decimal('5.000')
+        self.product.save(update_fields=['quantity_on_hand', 'updated_at'])
+
+        response = self.client.post(self._url(), {'subtract_all': True}, format='json')
+        self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
+        # Stock must remain untouched
+        self.product.refresh_from_db()
+        self.assertEqual(self.product.quantity_on_hand, Decimal('5.000'))
+
+    def test_missing_body_returns_400(self):
+        response = self.client.post(self._url(), {}, format='json')
+        self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
+
+    def test_unauthenticated_returns_401(self):
+        self.client.logout()
+        response = self.client.post(self._url(), {'subtract_all': True}, format='json')
+        self.assertEqual(response.status_code, status.HTTP_401_UNAUTHORIZED)
+
+    def test_wrong_document_type_returns_400(self):
+        purchase_doc = make_document(
+            self.business, Document.DocumentType.PURCHASE_INVOICE,
+            owner=self.owner, number='PO-001',
+        )
+        response = self.client.post(self._url(purchase_doc.id), {'subtract_all': True}, format='json')
+        self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
+
+    def test_unknown_item_id_returns_404(self):
+        import uuid
+        response = self.client.post(self._url(), {
+            'items': [{'item_id': str(uuid.uuid4()), 'quantity': 5}]
+        }, format='json')
+        self.assertEqual(response.status_code, status.HTTP_404_NOT_FOUND)
+
+
+class AddToInventoryEndpointTest(APITestCase):
+    """POST /api/documents/{id}/add-to-inventory/"""
+
+    def setUp(self):
+        self.owner = make_user('owner@test.com', role='owner')
+        self.business = make_business(self.owner)
+        self.product = make_product(self.business, qty_on_hand=Decimal('10.000'))
+        self.doc = make_document(
+            self.business, Document.DocumentType.PURCHASE_INVOICE, owner=self.owner
+        )
+        add_item(self.doc, self.product, 25)
+        self.doc.confirm()
+        self.client.force_authenticate(user=self.owner)
+
+    def _url(self, doc_id=None):
+        return f'/api/documents/{doc_id or self.doc.id}/add-to-inventory/'
+
+    def test_adds_all_items_to_stock(self):
+        response = self.client.post(self._url())
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.product.refresh_from_db()
+        self.assertEqual(self.product.quantity_on_hand, Decimal('35.000'))
+
+    def test_creates_purchase_received_transaction(self):
+        self.client.post(self._url())
+        tx = InventoryTransaction.objects.get(reference_document_id=self.doc.id)
+        self.assertEqual(tx.transaction_type, InventoryTransaction.TransactionType.PURCHASE_RECEIVED)
+        self.assertEqual(tx.quantity_change, Decimal('25.000'))
+
+    def test_unauthenticated_returns_401(self):
+        self.client.logout()
+        response = self.client.post(self._url())
+        self.assertEqual(response.status_code, status.HTTP_401_UNAUTHORIZED)
+
+    def test_wrong_document_type_returns_400(self):
+        sales_doc = make_document(
+            self.business, Document.DocumentType.SALES_INVOICE,
+            owner=self.owner, number='SI-001',
+        )
+        response = self.client.post(self._url(sales_doc.id))
+        self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
+
+
 class ConfirmEndpointTest(APITestCase):
-    """API tests for POST /api/documents/{id}/confirm/"""
+    """POST /api/documents/{id}/confirm/ — status only, no inventory."""
 
     def setUp(self):
         self.owner = make_user('owner@test.com', role='owner')
@@ -311,17 +320,11 @@ class ConfirmEndpointTest(APITestCase):
         self.assertEqual(response.status_code, status.HTTP_401_UNAUTHORIZED)
 
     def test_staff_cannot_confirm_another_staffs_document(self):
-        """
-        Staff A's queryset is scoped to created_by=staff_a.
-        Staff B's document is not in Staff A's queryset, so DRF
-        returns 404 (the secure choice — does not reveal the document exists).
-        """
         staff_a = make_user('staff_a@test.com', role='staff')
         staff_b = make_user('staff_b@test.com', role='staff')
         StaffMember.objects.create(user=staff_a, business=self.business, status='active')
         StaffMember.objects.create(user=staff_b, business=self.business, status='active')
 
-        # Document created by staff_b
         doc_b = make_document(
             self.business, Document.DocumentType.SALES_INVOICE,
             owner=staff_b, number='STAFF-B-001',
@@ -329,11 +332,9 @@ class ConfirmEndpointTest(APITestCase):
 
         self.client.force_authenticate(user=staff_a)
         response = self.client.post(self._url(doc_b.id))
-        # 404 — not in staff_a's queryset (intentionally not 403 to avoid info leak)
         self.assertIn(response.status_code, [
             status.HTTP_403_FORBIDDEN,
             status.HTTP_404_NOT_FOUND,
         ])
-        # Document must remain draft regardless
         doc_b.refresh_from_db()
         self.assertEqual(doc_b.status, Document.Status.DRAFT)

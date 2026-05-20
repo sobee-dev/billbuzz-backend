@@ -12,7 +12,6 @@ class Document(models.Model):
         PURCHASE_INVOICE = 'purchase_invoice', 'Purchase Invoice'
         PROFORMA_INVOICE = 'proforma_invoice', 'Proforma Invoice'
         SALES_INVOICE    = 'sales_invoice',    'Sales Invoice'
-        RECEIPT          = 'receipt',          'Receipt'
 
     class Status(models.TextChoices):
         DRAFT     = 'draft',      'Draft'
@@ -131,97 +130,19 @@ class Document(models.Model):
         self.paid_at = timezone.now()
         self.save(update_fields=['payment_status', 'paid_at', 'updated_at'])
 
-    # ── Inventory state machine ───────────────────────────────────────────────
-
-    def _inventory_items(self):
-        """Items that have a linked catalog product (inventory-tracked)."""
-        return self.items.filter(product__isnull=False).select_related('product')
+    # ── Document lifecycle ────────────────────────────────────────────────────
 
     @transaction.atomic
     def confirm(self):
-        from inventory.models import InventoryTransaction
-
         if self.status != self.Status.DRAFT:
             raise ValidationError(
                 f"Cannot confirm a document that is already '{self.status}'."
             )
-
-        if self.document_type == self.DocumentType.RECEIPT:
-            # Check stock for all linked products before touching anything.
-            for item in self._inventory_items():
-                if item.product.quantity_on_hand < item.quantity:
-                    raise ValidationError(
-                        f"Insufficient stock for '{item.product.name}'. "
-                        f"Available: {item.product.quantity_on_hand}, "
-                        f"Required: {item.quantity}."
-                    )
-            # Deduct immediately — receipts have no reservation step.
-            for item in self._inventory_items():
-                item.product.quantity_on_hand -= item.quantity
-                item.product.save(update_fields=['quantity_on_hand', 'updated_at'])
-                InventoryTransaction.objects.create(
-                    business=self.business,
-                    product=item.product,
-                    quantity_change=-item.quantity,
-                    transaction_type=InventoryTransaction.TransactionType.SALE_DELIVERED,
-                    reference_document_id=self.id,
-                    initiated_by=self.created_by,
-                )
-
-        elif self.document_type == self.DocumentType.SALES_INVOICE:
-            # Reserve inventory — actual deduction happens on deliver().
-            for item in self._inventory_items():
-                item.product.quantity_reserved += item.quantity
-                item.product.save(update_fields=['quantity_reserved', 'updated_at'])
-                InventoryTransaction.objects.create(
-                    business=self.business,
-                    product=item.product,
-                    quantity_change=item.quantity,
-                    transaction_type=InventoryTransaction.TransactionType.SALE_CONFIRMED,
-                    reference_document_id=self.id,
-                    initiated_by=self.created_by,
-                )
-
-        # Purchase invoices and proforma invoices: no inventory change at confirm.
-
         self.status = self.Status.CONFIRMED
         self.save(update_fields=['status', 'updated_at'])
 
     @transaction.atomic
     def mark_delivered(self):
-        from inventory.models import InventoryTransaction
-
-        if self.document_type == self.DocumentType.SALES_INVOICE:
-            # Deduct on_hand and release the reservation made at confirm().
-            for item in self._inventory_items():
-                item.product.quantity_on_hand -= item.quantity
-                item.product.quantity_reserved -= item.quantity
-                item.product.save(
-                    update_fields=['quantity_on_hand', 'quantity_reserved', 'updated_at']
-                )
-                InventoryTransaction.objects.create(
-                    business=self.business,
-                    product=item.product,
-                    quantity_change=-item.quantity,
-                    transaction_type=InventoryTransaction.TransactionType.SALE_DELIVERED,
-                    reference_document_id=self.id,
-                    initiated_by=self.created_by,
-                )
-
-        elif self.document_type == self.DocumentType.PURCHASE_INVOICE:
-            # Add received stock to on_hand.
-            for item in self._inventory_items():
-                item.product.quantity_on_hand += item.quantity
-                item.product.save(update_fields=['quantity_on_hand', 'updated_at'])
-                InventoryTransaction.objects.create(
-                    business=self.business,
-                    product=item.product,
-                    quantity_change=item.quantity,
-                    transaction_type=InventoryTransaction.TransactionType.PURCHASE_RECEIVED,
-                    reference_document_id=self.id,
-                    initiated_by=self.created_by,
-                )
-
         self.is_delivered = True
         self.delivered_at = timezone.now()
         self.status = self.Status.DELIVERED
@@ -229,26 +150,8 @@ class Document(models.Model):
 
     @transaction.atomic
     def cancel(self):
-        from inventory.models import InventoryTransaction
-
         if self.status == self.Status.CANCELLED:
             raise ValidationError('Document is already cancelled.')
-
-        # Only confirmed sales invoices have reserved stock to release.
-        if (self.status == self.Status.CONFIRMED
-                and self.document_type == self.DocumentType.SALES_INVOICE):
-            for item in self._inventory_items():
-                item.product.quantity_reserved -= item.quantity
-                item.product.save(update_fields=['quantity_reserved', 'updated_at'])
-                InventoryTransaction.objects.create(
-                    business=self.business,
-                    product=item.product,
-                    quantity_change=-item.quantity,
-                    transaction_type=InventoryTransaction.TransactionType.SALE_CANCELLED,
-                    reference_document_id=self.id,
-                    initiated_by=self.created_by,
-                )
-
         self.status = self.Status.CANCELLED
         self.save(update_fields=['status', 'updated_at'])
 
