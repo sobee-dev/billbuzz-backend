@@ -85,7 +85,21 @@ INSTALLED_APPS = [
     "reports",
     "staff",
     "push",
+    "billing",
 ]
+
+
+
+
+# STRIPE_SECRET_KEY = env('STRIPE_SECRET_KEY')
+# STRIPE_PUBLISHABLE_KEY = env('STRIPE_PUBLISHABLE_KEY')
+# STRIPE_WEBHOOK_SECRET = env('STRIPE_WEBHOOK_SECRET')
+# STRIPE_PRICE_IDS = {
+#     'basic': env('STRIPE_PRICE_BASIC'),
+#     'pro':   env('STRIPE_PRICE_PRO'),
+# }
+# FRONTEND_BILLING_URL = env('FRONTEND_BILLING_URL', default='https://billing.billbuzz.app')
+
 
 # ── Middleware ────────────────────────────────────────────────────────────────
 MIDDLEWARE = [

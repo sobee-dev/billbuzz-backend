@@ -1,0 +1,22 @@
+<!-- billing/templates/billing/dashboard.html -->
+{% extends "billing/base.html" %}
+{% block content %}
+  <h1>{{ business.name }} — Billing</h1>
+
+  <div class="status-card">
+    <p>Plan: <strong>{{ subscription.get_plan_tier_display }}</strong></p>
+    <p>Status: <strong>{{ subscription.get_status_display }}</strong></p>
+    {% if subscription.current_period_end %}
+      <p>Renews: {{ subscription.current_period_end|date:"M j, Y" }}</p>
+    {% endif %}
+    {% if subscription.cancel_at_period_end %}
+      <p class="warning">Cancels at end of current period.</p>
+    {% endif %}
+  </div>
+
+  {% if subscription.stripe_customer_id %}
+    <a href="{% url 'billing-portal' %}" class="btn">Manage Billing</a>
+  {% else %}
+    <a href="{% url 'billing-plans' %}" class="btn btn-primary">Choose a Plan</a>
+  {% endif %}
+{% endblock %}

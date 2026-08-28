@@ -1,0 +1,12 @@
+<!-- billing/templates/billing/login.html -->
+{% extends "billing/base.html" %}
+{% block content %}
+  <h1>BillBuzz Billing</h1>
+  {% if messages %}{% for m in messages %}<p class="error">{{ m }}</p>{% endfor %}{% endif %}
+  <form method="post">
+    {% csrf_token %}
+    <input type="email" name="email" placeholder="Email" required>
+    <input type="password" name="password" placeholder="Password" required>
+    <button type="submit">Log In</button>
+  </form>
+{% endblock %}

@@ -1,0 +1,14 @@
+<!-- billing/templates/billing/plans.html -->
+{% extends "billing/base.html" %}
+{% block content %}
+  <h1>Choose a plan for {{ business.name }}</h1>
+  <div class="plans">
+    {% for plan in plans %}
+      <div class="plan-card">
+        <h2>{{ plan.label }}</h2>
+        <p>{{ plan.price }}</p>
+        <a href="{% url 'billing-checkout' plan.tier %}" class="btn btn-primary">Subscribe</a>
+      </div>
+    {% endfor %}
+  </div>
+{% endblock %}
