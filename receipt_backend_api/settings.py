@@ -25,6 +25,7 @@ DEFAULT_AUTO_FIELD = "django.db.models.BigAutoField"
 # ── Frontend URL (drives CORS, CSRF, Google redirect) ─────────────────────────
 FRONTEND_URL = os.getenv("FRONTEND_URL", "http://localhost:3000")
 BACKEND_URL = os.getenv("BACKEND_URL")
+MOBILE_URL = os.getenv("MOBILE_URL")
 # ── Database ──────────────────────────────────────────────────────────────────
 DATABASE_URL = os.getenv("DATABASE_URL")
 
@@ -59,14 +60,6 @@ INSTALLED_APPS = [
     
     # Whitenoise
     "whitenoise.runserver_nostatic",
-    
-    
-    # Cloudinary 
-    
-    "cloudinary_storage",
-    "cloudinary",
-
-   
 
     # Third party
     "rest_framework",
@@ -79,6 +72,7 @@ INSTALLED_APPS = [
     "allauth.socialaccount",
     "allauth.socialaccount.providers.google",
     "django_extensions",
+    "rest_framework_simplejwt.token_blacklist",
 
     # Local apps
     "accounts",
@@ -89,6 +83,8 @@ INSTALLED_APPS = [
     "documents",
     "inventory",
     "reports",
+    "staff",
+    "push",
 ]
 
 # ── Middleware ────────────────────────────────────────────────────────────────
@@ -123,7 +119,7 @@ TEMPLATES = [
 
 # ── CORS & CSRF ───────────────────────────────────────────────────────────────
 CORS_ALLOW_CREDENTIALS = True
-CORS_ALLOWED_ORIGINS = [FRONTEND_URL]
+CORS_ALLOWED_ORIGINS = [FRONTEND_URL, MOBILE_URL]
 CSRF_TRUSTED_ORIGINS = [BACKEND_URL]
 CSRF_COOKIE_HTTPONLY = False  # Must be False so Axios can read it
 CSRF_USE_SESSIONS = False
@@ -165,9 +161,12 @@ REST_FRAMEWORK = {
 
 # ── JWT ───────────────────────────────────────────────────────────────────────
 SIMPLE_JWT = {
-    "ACCESS_TOKEN_LIFETIME": timedelta(hours=24),
-    "REFRESH_TOKEN_LIFETIME": timedelta(days=1),
+    "ACCESS_TOKEN_LIFETIME": ( timedelta(minutes=60) if IS_PROD else timedelta(minutes=3)
+    ),
+    "REFRESH_TOKEN_LIFETIME": ( timedelta(hours=10) if IS_PROD else timedelta(minutes=20)
+    ),
     "ROTATE_REFRESH_TOKENS": True,
+    "BLACKLIST_AFTER_ROTATION": True, 
     "AUTH_COOKIE_SECURE": IS_PROD,   # True in production (HTTPS), False locally
     "AUTH_COOKIE_HTTP_ONLY": False,
 }
@@ -201,6 +200,14 @@ SOCIALACCOUNT_PROVIDERS = {
 }
 
 GOOGLE_REDIRECT_URI = f"{FRONTEND_URL}/oauth/callback"
+GOOGLE_MOBILE_REDIRECT_URI = os.getenv("GOOGLE_MOBILE_REDIRECT_URI", "billbuzz://")
+GOOGLE_EXPO_PROXY_REDIRECT_URI = os.getenv("GOOGLE_EXPO_PROXY_REDIRECT_URI")  # only needed while testing in Expo Go
+
+GOOGLE_ALLOWED_REDIRECT_URIS = {
+    uri for uri in [GOOGLE_REDIRECT_URI, GOOGLE_MOBILE_REDIRECT_URI, GOOGLE_EXPO_PROXY_REDIRECT_URI]
+    if uri
+}
+
 
 # ── Session ───────────────────────────────────────────────────────────────────
 SESSION_COOKIE_AGE = 86400          # 24 hours
@@ -208,20 +215,28 @@ SESSION_EXPIRE_AT_BROWSER_CLOSE = False
 SESSION_SAVE_EVERY_REQUEST = False
 
 # ── Cloudinary ────────────────────────────────────────────────────────────────
+
+
 CLOUDINARY_STORAGE = {
     "CLOUD_NAME": os.getenv("CLOUDINARY_CLOUD_NAME"),
     "API_KEY": os.getenv("CLOUDINARY_API_KEY"),
     "API_SECRET": os.getenv("CLOUDINARY_API_SECRET"),
-    # "STATICFILES_STORAGE": None,
 }
-DEFAULT_FILE_STORAGE = "cloudinary_storage.storage.MediaCloudinaryStorage"
+CLOUDINARY_CLOUD_NAME = CLOUDINARY_STORAGE["CLOUD_NAME"]
+CLOUDINARY_API_KEY    = CLOUDINARY_STORAGE["API_KEY"]
+CLOUDINARY_API_SECRET = CLOUDINARY_STORAGE["API_SECRET"]
+
 
 # ── Password Validation ───────────────────────────────────────────────────────
 AUTH_PASSWORD_VALIDATORS = [
     {"NAME": "django.contrib.auth.password_validation.UserAttributeSimilarityValidator"},
-    {"NAME": "django.contrib.auth.password_validation.MinimumLengthValidator"},
+    {'NAME': 'django.contrib.auth.password_validation.MinimumLengthValidator',
+        'OPTIONS': {
+            'min_length': 6,  # Lowered from 8 to 6
+        }
+    },
     {"NAME": "django.contrib.auth.password_validation.CommonPasswordValidator"},
-    {"NAME": "django.contrib.auth.password_validation.NumericPasswordValidator"},
+    {'NAME': 'accounts.validators.NoCommonPinValidator',},
 ]
 
 # ── Internationalisation ──────────────────────────────────────────────────────
@@ -236,8 +251,6 @@ STATIC_ROOT = BASE_DIR / "staticfiles"
 STATICFILES_STORAGE = "whitenoise.storage.CompressedManifestStaticFilesStorage"
 
 
-
-
 # ── Production Security ───────────────────────────────────────────────────────
 if IS_PROD:
     SECURE_SSL_REDIRECT = True
@@ -246,5 +259,12 @@ if IS_PROD:
     SESSION_COOKIE_SECURE = True
     CSRF_COOKIE_SECURE = True
     X_FRAME_OPTIONS = "DENY"
+
+    # This set normally travels with SECURE_SSL_REDIRECT —
+    # without these, browsers only enforce HTTPS after they've already seen
+    # at least one secure response, and subdomains aren't covered at all.
     
-    
+    SECURE_HSTS_SECONDS = 31536000          # 1 year
+    SECURE_HSTS_INCLUDE_SUBDOMAINS = True
+    SECURE_HSTS_PRELOAD = True
+    SECURE_REFERRER_POLICY = "same-origin"

@@ -1,14 +1,13 @@
-# accounts/urls.py
 from django.urls import path, include
 from rest_framework.routers import DefaultRouter
-from .views import UserViewSet
-from rest_framework_simplejwt.views import TokenRefreshView
+from .views import UserViewSet, SessionLimitedTokenRefreshView, oauth_mobile_bridge
 
 router = DefaultRouter()
 router.register(r'', UserViewSet, basename='user')
 
 urlpatterns = [
     path('', include(router.urls)),
-    path('token/refresh/', TokenRefreshView.as_view(), name='token_refresh'),
+    path('token/refresh/', SessionLimitedTokenRefreshView.as_view(), name='token_refresh'),
     
+    path("oauth/mobile-callback/", oauth_mobile_bridge, name="oauth-mobile-bridge"),
 ]

@@ -6,11 +6,10 @@ from django.db import models
 class InventoryTransaction(models.Model):
 
     class TransactionType(models.TextChoices):
-        SALE_CONFIRMED    = 'sale_confirmed',    'Sale Confirmed'
-        SALE_DELIVERED    = 'sale_delivered',    'Sale Delivered'
-        SALE_CANCELLED    = 'sale_cancelled',    'Sale Cancelled'
+       
         PURCHASE_RECEIVED = 'purchase_received', 'Purchase Received'
         ADJUSTMENT        = 'adjustment',        'Adjustment'
+        SALES_CONFIRMED   = 'sales_confirmed', 'Sales Confirmed'
 
     id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
 

@@ -1,4 +1,7 @@
 from rest_framework import serializers
+
+from business.services import delete_cloudinary_asset
+from receipt_backend_api import settings
 from .models import Business, SyncStatus
 from accounts.models import User
 
@@ -23,7 +26,7 @@ class BusinessBaseSerializer(serializers.ModelSerializer):
 
     def validate_phone(self, value):
         if not value:
-            raise serializers.ValidationError("Phone number is required")
+            return value
         cleaned = value.replace('+', '').replace('-', '').replace(' ', '').replace('(', '').replace(')', '')
         if not cleaned.isdigit():
             raise serializers.ValidationError("Phone number must contain only digits and common formatting characters")
@@ -37,7 +40,7 @@ class BusinessBaseSerializer(serializers.ModelSerializer):
     def validate_currency(self, value):
     # 1. Check if it's empty
         if not value:
-            raise serializers.ValidationError("Currency symbol must be provided")
+            return value
         
         # 2. Check length (Symbols are usually 1-3 characters)
         if len(value) > 5:
@@ -46,13 +49,11 @@ class BusinessBaseSerializer(serializers.ModelSerializer):
         return value
     
     def validate_logo_url(self, value):
+        cloud_name = settings.CLOUDINARY_STORAGE["CLOUD_NAME"]
         if not value:
             return value
-        if "res.cloudinary.com" not in value:
+        if f"res.cloudinary.com/{cloud_name}/" not in value:
             raise serializers.ValidationError("Logo must be uploaded via Cloudinary")
-        # allowed_ext = (".png", ".jpg", ".jpeg", ".webp", ".svg")
-        # if not any(ext in value.lower() for ext in allowed_ext):
-        #     raise serializers.ValidationError("Unsupported logo image format")
         return value
 
     def validate_signatures(self, attrs):
@@ -109,7 +110,7 @@ class BusinessListSerializer(BusinessBaseSerializer):
     """
     owner_name = serializers.SerializerMethodField()
     owner_email = serializers.EmailField(source='owner.email', read_only=True)
-    sync_status_display = serializers.CharField(source='get_sync_status_display', read_only=True)
+    
     
     class Meta:
         model = Business
@@ -120,7 +121,7 @@ class BusinessListSerializer(BusinessBaseSerializer):
             'owner_email',
             'email',
             'phone',
-            'logo',
+            'logo_url',
             'onboarding_complete',
             'sync_status',
             'sync_status_display',
@@ -229,7 +230,19 @@ class BusinessUpdateSerializer(BusinessBaseSerializer):
         )
         if needs_sync and instance.sync_status == SyncStatus.SYNCED:
             validated_data['sync_status'] = SyncStatus.PENDING
-        return super().update(instance, validated_data)
+         # Capture the previous URLs before the instance is mutated, so we
+        # know what to clean up afterward.
+        old_logo_url = instance.logo_url
+        old_signature_url = instance.signature_url
+        updated = super().update(instance, validated_data)
+        if 'logo_url' in validated_data and old_logo_url and old_logo_url != updated.logo_url:
+            delete_cloudinary_asset(old_logo_url)
+        # Also fires when signature_type switches to 'text'/'none', since
+        # validate_signatures() clears signature_url to '' in that case —
+        # correctly cleaning up an image that's no longer referenced.
+        if 'signature_url' in validated_data and old_signature_url and old_signature_url != updated.signature_url:
+            delete_cloudinary_asset(old_signature_url)
+        return updated
 
 
 class BusinessSyncSerializer(serializers.ModelSerializer):
@@ -274,28 +287,40 @@ class BusinessSyncSerializer(serializers.ModelSerializer):
 
 
 class BusinessOnboardingSerializer(serializers.ModelSerializer):
-    """
-    Serializer for completing onboarding process
-    """
     class Meta:
         model = Business
         fields = ['onboarding_complete', 'selected_template_id']
-    
+
     def validate(self, attrs):
-        """Ensure required fields are set before completing onboarding"""
         if attrs.get('onboarding_complete', False):
             instance = self.instance
-            required_fields = ['name', 'phone', 'email', 'address_one', 'selected_template_id']
-            
+
+            def current(field):
+                return attrs.get(field, getattr(instance, field) if instance else None)
+
             missing_fields = []
-            for field in required_fields:
-                value = attrs.get(field, getattr(instance, field) if instance else None)
-                if not value:
+
+            for field in ['name', 'phone', 'email', 'address_one', 'brand_color_one',
+                          'selected_template_id', 'currency']:
+                if not current(field):
                     missing_fields.append(field)
-            
+
+            # tax_enabled=False is a valid, deliberate choice — not missing data.
+            if current('tax_enabled'):
+                tax_rate = current('tax_rate')
+                if not tax_rate or tax_rate <= 0:
+                    missing_fields.append('tax_rate')
+
+            # Signature fields are mutually exclusive by design; 'none' is valid.
+            sig_type = current('signature_type')
+            if sig_type == 'text' and not current('signature_text'):
+                missing_fields.append('signature_text')
+            elif sig_type == 'image' and not current('signature_url'):
+                missing_fields.append('signature_url')
+
             if missing_fields:
                 raise serializers.ValidationError({
                     'onboarding_complete': f'Cannot complete onboarding. Missing required fields: {", ".join(missing_fields)}'
                 })
-        
+
         return attrs

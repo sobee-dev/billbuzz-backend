@@ -16,7 +16,7 @@ class SyncStatus(models.TextChoices):
 class Business(models.Model):
     
     id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
-# Link the Business to a User (The Owner)
+
     owner = models.OneToOneField(
         settings.AUTH_USER_MODEL, 
         on_delete=models.CASCADE,
@@ -34,11 +34,11 @@ class Business(models.Model):
     # Store URL for the logo
     logo_url = models.URLField(null=True, blank=True)
     
-    currency = models.CharField(max_length=10, default="$")
+    currency = models.CharField(max_length=10, default="₦")
     tax_rate = models.DecimalField(max_digits=5, decimal_places=2, default=0.0)
     tax_enabled = models.BooleanField(default=False)
     
-    selected_template_id = models.CharField(max_length=100)
+    selected_template_id = models.CharField(max_length=100, null=True, blank=True)
     onboarding_complete = models.BooleanField(default=False)
     
     created_at = models.DateTimeField(auto_now_add=True)
@@ -46,12 +46,13 @@ class Business(models.Model):
     
     motto = models.CharField(max_length=255, null=True, blank=True)
     signature_type = models.CharField(
-        choices=[("none","none"),("text","text"),("image","image")]
+        choices=[("none","none"),("text","text"),("image","image")], default="none"
     )
     brand_color_one = models.CharField(max_length=8, default="#ca3a5e")
     brand_color_two = models.CharField(max_length=8, default="#A7A3A3")
     signature_text = models.CharField(max_length=255, blank=True, null=True)
     signature_url = models.URLField(blank=True, null=True)
+    
     
     server_id = models.IntegerField(null=True, blank=True)
     
@@ -61,7 +62,7 @@ class Business(models.Model):
         default=SyncStatus.PENDING)
     
     def clean(self):
-        # Move ALL core logic here
+        # ALL core logic here
         if self.signature_type == 'none':
             self.signature_text = ''
             self.signature_url = ''
@@ -80,34 +81,3 @@ class Business(models.Model):
         return self.name
 
 
-class StaffMember(models.Model):
-    PERMISSION_CHOICES = [
-        ('full_access', 'Full Access'),
-        ('limited_access', 'Limited Access'),
-    ]
-
-    STATUS_CHOICES = [
-        ('active', 'Active'),
-        ('inactive', 'Inactive'),
-    ]
-
-    user = models.ForeignKey(
-        settings.AUTH_USER_MODEL,
-        on_delete=models.CASCADE,
-        related_name='staff_accounts'
-    )
-    business = models.ForeignKey(
-        Business,
-        on_delete=models.CASCADE,
-        related_name='staff_members'
-    )
-    department = models.CharField(max_length=100, blank=True)
-    permission_level = models.CharField(max_length=20, choices=PERMISSION_CHOICES, default='full_access')
-    status = models.CharField(max_length=20, choices=STATUS_CHOICES, default='active')
-    created_at = models.DateTimeField(auto_now_add=True)
-
-    class Meta:
-        unique_together = [['user', 'business']]
-
-    def __str__(self):
-        return f"{self.user.email} @ {self.business.name}"

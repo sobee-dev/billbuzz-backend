@@ -7,11 +7,12 @@ from rest_framework.response import Response
 from rest_framework.pagination import CursorPagination
 from django.core.exceptions import ValidationError as DjangoValidationError
 from django.db import transaction
-
-from business.models import Business, StaffMember
+from products.models import Product
+from business.models import Business
 from inventory.models import InventoryTransaction
+from staff.models import StaffMember
 from .models import Document, DocumentItem
-from .serializers import DocumentSerializer, DocumentListSerializer
+from .serializers import DocumentSerializer, DocumentListSerializer, DocumentUpdateSerializer
 
 
 class DocumentCursorPagination(CursorPagination):
@@ -23,12 +24,19 @@ class DocumentCursorPagination(CursorPagination):
 class DocumentViewSet(viewsets.ModelViewSet):
     permission_classes = [permissions.IsAuthenticated]
     pagination_class = DocumentCursorPagination
-    http_method_names = ['get', 'post', 'patch', 'delete', 'head', 'options']
+    
 
     def get_serializer_class(self):
         if self.action == 'list':
             return DocumentListSerializer
+        if self.action in ['update', 'partial_update']:
+            return DocumentUpdateSerializer
         return DocumentSerializer
+    
+    def perform_update(self, serializer):
+        if serializer.instance.status != Document.Status.DRAFT:
+            raise PermissionDenied("Only documents in 'DRAFT' status can be edited.")
+        serializer.save()
 
     def _get_base_queryset(self):
         """Returns the unfiltered base queryset scoped to the requesting user's role."""
@@ -64,15 +72,20 @@ class DocumentViewSet(viewsets.ModelViewSet):
         if doc_status:
             queryset = queryset.filter(status=doc_status)
 
-        payment_status = self.request.query_params.get('payment_status')
-        if payment_status:
-            queryset = queryset.filter(payment_status=payment_status)
-
         customer_id = self.request.query_params.get('customer')
         if customer_id:
             queryset = queryset.filter(customer_id=customer_id)
 
         return queryset
+
+    def create(self, request, *args, **kwargs):
+        serializer = self.get_serializer(data=request.data)
+        if not serializer.is_valid():
+            print("--- SERIALIZER VALIDATION ERROR ---")
+            print(serializer.errors)
+            print("-----------------------------------")
+            return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
+        return super().create(request, *args, **kwargs)
 
     @transaction.atomic
     def perform_create(self, serializer):
@@ -91,7 +104,7 @@ class DocumentViewSet(viewsets.ModelViewSet):
         serializer.save(
             business=business,
             created_by=user,
-            sync_status=Document.SyncStatus.SYNCED,
+            
         )
 
     def perform_destroy(self, instance):
@@ -99,34 +112,57 @@ class DocumentViewSet(viewsets.ModelViewSet):
 
     # ── Custom actions ────────────────────────────────────────────────────────
 
-    @action(detail=True, methods=['post'], url_path='confirm')
-    def confirm(self, request, pk=None):
-        doc = self.get_object()
-        try:
-            doc.confirm()
-        except DjangoValidationError as exc:
-            return Response({'error': exc.message}, status=status.HTTP_400_BAD_REQUEST)
-        return Response(DocumentSerializer(doc).data)
+   
 
     @action(detail=True, methods=['post'], url_path='deliver')
     def deliver(self, request, pk=None):
         doc = self.get_object()
-        if doc.status not in (Document.Status.CONFIRMED, Document.Status.DRAFT):
+        if doc.status !=  Document.Status.DRAFT:
             return Response(
                 {'error': 'Document cannot be marked delivered from its current status.'},
                 status=status.HTTP_400_BAD_REQUEST,
             )
         doc.mark_delivered()
         return Response(DocumentSerializer(doc).data)
+    
+    @action(detail=True, methods=['get'], url_path='clone')
+    def clone(self, request, pk=None):
+        """
+        GET /api/documents/{uuid}/clone/
+        Returns an editable 'template' based on an existing document.
+        """
+        original_doc = self.get_object()
+        
+        # 1. Fetch related items
+        items = original_doc.items.all()
+        
+        # 2. Serialize current document
+        serializer = DocumentSerializer(original_doc)
+        data = serializer.data.copy()
+        
+        # 3. Strip fields that shouldn't be copied
+        # We remove fields that identify the old transaction
+        fields_to_remove = [
+            'id', 'document_number', 'status', 'created_at', 
+            'updated_at', 'sync_status', 'paid_at', 'delivered_at'
+        ]
+        for field in fields_to_remove:
+            data.pop(field, None)
+            
+        # 4. Include items in the response so the frontend 
+        # can pre-fill the line items list
+        data['items'] = [
+            {
+                'product': item.product.id if item.product else None,
+                'description': item.description,
+                'quantity': item.quantity,
+                'unit_price': item.unit_price,
+                'total': item.total
+            } for item in items
+        ]
+        
+        return Response(data)
 
-    @action(detail=True, methods=['post'], url_path='cancel')
-    def cancel(self, request, pk=None):
-        doc = self.get_object()
-        try:
-            doc.cancel()
-        except DjangoValidationError as exc:
-            return Response({'error': exc.message}, status=status.HTTP_400_BAD_REQUEST)
-        return Response(DocumentSerializer(doc).data)
 
     @action(detail=True, methods=['post'], url_path='mark-paid')
     def mark_paid(self, request, pk=None):
@@ -137,6 +173,11 @@ class DocumentViewSet(viewsets.ModelViewSet):
     @action(detail=True, methods=['post'], url_path='soft-delete')
     def soft_delete(self, request, pk=None):
         doc = self.get_object()
+        if request.user != doc.business.owner:
+            return Response(
+                {'error': 'Only the business owner is authorized to delete documents.'},
+                status=status.HTTP_403_FORBIDDEN
+            )
         doc.soft_delete()
         return Response({'status': 'Document deleted', 'id': str(doc.id)})
 
@@ -166,14 +207,16 @@ class DocumentViewSet(viewsets.ModelViewSet):
                 status=status.HTTP_400_BAD_REQUEST,
             )
 
-        tracked = doc.items.filter(product__isnull=False).select_related('product')
+        # Dropped select_related('product') here — we now fetch the
+        # authoritative, locked Product rows separately below instead of
+        # trusting these possibly-stale related objects.
+        tracked = doc.items.filter(product__isnull=False)
 
         if subtract_all:
-            targets = [(item, item.quantity) for item in tracked]
+            targets_raw = [(item, item.quantity) for item in tracked]
         else:
-            # Build a lookup by item id
             item_map = {str(item.id): item for item in tracked}
-            targets = []
+            targets_raw = []
             for entry in items_payload:
                 item_id = str(entry.get('item_id', ''))
                 try:
@@ -188,35 +231,45 @@ class DocumentViewSet(viewsets.ModelViewSet):
                         {'error': f'Item {item_id} not found on this document.'},
                         status=status.HTTP_404_NOT_FOUND,
                     )
-                targets.append((item_map[item_id], qty))
+                targets_raw.append((item_map[item_id], qty))
+
+        # Lock the actual Product rows for the rest of this transaction so
+        # two overlapping deduct-inventory calls touching the same product
+        # can't both read a stale quantity_on_hand and both pass validation.
+        product_ids = [item.product_id for item, _ in targets_raw]
+        locked_products = {
+            p.id: p for p in Product.objects.select_for_update().filter(id__in=product_ids)
+        }
+        targets = [(item, qty, locked_products[item.product_id]) for item, qty in targets_raw]
 
         # Validate stock before touching anything
-        for item, qty in targets:
-            if item.product.quantity_on_hand < qty:
+        for item, qty, product in targets:
+            if product.quantity_on_hand < qty:
                 return Response(
                     {
                         'error': (
-                            f"Insufficient stock for '{item.product.name}'. "
-                            f"Available: {item.product.quantity_on_hand}, "
+                            f"Insufficient stock for '{product.name}'. "
+                            f"Available: {product.quantity_on_hand}, "
                             f"Requested: {qty}."
                         )
                     },
                     status=status.HTTP_400_BAD_REQUEST,
                 )
 
-        for item, qty in targets:
-            item.product.quantity_on_hand -= qty
-            item.product.save(update_fields=['quantity_on_hand', 'updated_at'])
+        for item, qty, product in targets:
+            product.quantity_on_hand -= qty
+            product.save(update_fields=['quantity_on_hand', 'updated_at'])
             InventoryTransaction.objects.create(
                 business=doc.business,
-                product=item.product,
+                product=product,
                 quantity_change=-qty,
-                transaction_type=InventoryTransaction.TransactionType.SALE_DELIVERED,
+                transaction_type=InventoryTransaction.TransactionType.SALES_CONFIRMED,
                 reference_document_id=doc.id,
                 initiated_by=request.user,
             )
 
         return Response({'status': 'Stock deducted.'}, status=status.HTTP_200_OK)
+
 
     @action(detail=True, methods=['post'], url_path='add-to-inventory')
     @transaction.atomic

@@ -20,7 +20,7 @@ class CustomUserAdmin(UserAdmin):
 
     fieldsets = (
         ("Account", {"fields": ("email", "password")}),
-        ("Personal Info", {"fields": ("first_name", "last_name", "default_currency")}),
+        ("Personal Info", {"fields": ("first_name", "last_name")}),
         ("Permissions", {"fields": (
             "is_active", "is_staff", "is_superuser",
             "groups", "user_permissions"
@@ -39,5 +39,3 @@ class CustomUserAdmin(UserAdmin):
 
     # Required since username field is removed
     filter_horizontal = ("groups", "user_permissions")
-    
-    
