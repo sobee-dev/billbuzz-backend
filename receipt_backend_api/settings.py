@@ -14,7 +14,12 @@ IS_PROD = ENV == "production"
 # ── Core ──────────────────────────────────────────────────────────────────────
 SECRET_KEY = os.getenv("SECRET_KEY")
 DEBUG = not IS_PROD
-ALLOWED_HOSTS = os.getenv("ALLOWED_HOSTS", "localhost,127.0.0.1").split(",")
+
+if DEBUG:
+    ALLOWED_HOSTS = ['*']
+else:
+    ALLOWED_HOSTS = [h.strip() for h in os.getenv("ALLOWED_HOSTS", "").split(",")]
+
 AUTH_USER_MODEL = "accounts.User"
 SITE_ID = 1
 ROOT_URLCONF = "receipt_backend_api.urls"
@@ -91,13 +96,13 @@ INSTALLED_APPS = [
 
 
 
-# STRIPE_SECRET_KEY = env('STRIPE_SECRET_KEY')
-# STRIPE_PUBLISHABLE_KEY = env('STRIPE_PUBLISHABLE_KEY')
-# STRIPE_WEBHOOK_SECRET = env('STRIPE_WEBHOOK_SECRET')
-# STRIPE_PRICE_IDS = {
-#     'basic': env('STRIPE_PRICE_BASIC'),
-#     'pro':   env('STRIPE_PRICE_PRO'),
-# }
+STRIPE_SECRET_KEY = os.getenv('STRIPE_SECRET_KEY')
+STRIPE_PUBLISHABLE_KEY = os.getenv('STRIPE_PUBLISHABLE_KEY')
+STRIPE_WEBHOOK_SECRET = os.getenv('STRIPE_WEBHOOK_SECRET')
+STRIPE_PRICE_IDS = {
+    'basic': os.getenv('STRIPE_PRICE_BASIC'),
+    'pro':   os.getenv('STRIPE_PRICE_PRO'),
+}
 # FRONTEND_BILLING_URL = env('FRONTEND_BILLING_URL', default='https://billing.billbuzz.app')
 
 

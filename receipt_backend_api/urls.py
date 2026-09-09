@@ -25,6 +25,6 @@ urlpatterns = [
    path('api/inventory/', include('inventory.urls')),
    path('api/staff/', include('staff.urls')),
    path('api/reports/', include('reports.urls')),
-   path('api/billing/', include('billing.urls')),
-   path('billing/', include('billing.web_urls')),
+#    path('api/billing/', include('billing.urls')),
+#    path('billing/', include('billing.web_urls')),
 ]

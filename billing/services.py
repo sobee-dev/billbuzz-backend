@@ -18,8 +18,7 @@ def get_or_create_stripe_customer(business) -> str:
     if sub.stripe_customer_id:
         return sub.stripe_customer_id
 
-    owner = business.owner  # ⚠ verify this is the actual field name — same
-                             # open gap flagged for push/services.py earlier
+    owner = business.owner 
     customer = stripe.Customer.create(
         email=owner.email,
         name=business.name,

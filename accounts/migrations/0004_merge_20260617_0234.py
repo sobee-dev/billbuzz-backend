@@ -7,7 +7,7 @@ class Migration(migrations.Migration):
 
     dependencies = [
         ('accounts', '0003_remove_user_default_currency_user_avatar_color_and_more'),
-        ('accounts', '0003_update_passcode_field'),
+        
     ]
 
     operations = [
